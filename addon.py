@@ -17,8 +17,8 @@ VIDEO_INFO_CACHE = {}
 def get_url(**kwargs):
     return '{}?{}'.format(sys.argv[0], urlencode(kwargs))
 
-def log(msg):
-    xbmc.log('[MTV-REWIND] {}'.format(str(msg)), xbmc.LOGINFO)
+def log(msg, level=xbmc.LOGINFO):
+    xbmc.log('[MTV-REWIND] {}'.format(str(msg)), level)
 
 def get_setting_bool(setting_id):
     """Liest Boolean-Setting aus."""
@@ -32,7 +32,7 @@ def get_playlists():
             len(PLAYLISTS), sum(len(v) for v in PLAYLISTS.values())))
         return PLAYLISTS
     except Exception as e:
-        log('ERROR loading playlists: {}'.format(str(e)))
+        log('ERROR loading playlists: {}'.format(str(e)), level=xbmc.LOGERROR)
         return {}
 
 def get_video_info_from_youtube(video_id):
@@ -81,7 +81,7 @@ def get_video_info_from_youtube(video_id):
             return info
             
     except Exception as e:
-        log('Could not fetch info for {}: {}'.format(video_id, str(e)))
+        log('Could not fetch info for {}: {}'.format(video_id, str(e)), level=xbmc.LOGWARNING)
     
     # Fallback
     return {
@@ -163,8 +163,8 @@ def list_channels(handle):
         log('=== LIST CHANNELS END ===')
         
     except Exception as e:
-        log('ERROR: {}'.format(str(e)))
-        log(traceback.format_exc())
+        log('ERROR: {}'.format(str(e)), level=xbmc.LOGERROR)
+        log(traceback.format_exc(), level=xbmc.LOGERROR)
         xbmcplugin.endOfDirectory(handle, succeeded=False)
 
 def browse_channel(handle, channel_id):
@@ -242,8 +242,8 @@ def browse_channel(handle, channel_id):
         log('=== BROWSE END ===')
         
     except Exception as e:
-        log('ERROR: {}'.format(str(e)))
-        log(traceback.format_exc())
+        log('ERROR: {}'.format(str(e)), level=xbmc.LOGERROR)
+        log(traceback.format_exc(), level=xbmc.LOGERROR)
         xbmcplugin.endOfDirectory(handle, succeeded=False)
 
 def router(paramstring):
@@ -258,7 +258,7 @@ def router(paramstring):
         else:
             xbmcplugin.endOfDirectory(handle, succeeded=False)
     except Exception as e:
-        log('FATAL: {}'.format(str(e)))
+        log('FATAL: {}'.format(str(e)), level=xbmc.LOGERROR)
         try:
             xbmcplugin.endOfDirectory(int(sys.argv[1]), succeeded=False)
         except:
