@@ -4,14 +4,19 @@ import xbmcgui
 import xbmcplugin
 import xbmcaddon
 import xbmc
+import xbmcvfs
 import traceback
 import json
+import os
 from urllib.parse import urlencode, parse_qsl
 
 ADDON = xbmcaddon.Addon()
 ADDON_NAME = ADDON.getAddonInfo('name')
+ADDON_ID = ADDON.getAddonInfo('id')
+ADDON_DATA_PATH = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
+CACHE_FILE = os.path.join(ADDON_DATA_PATH, 'video_metadata_cache.json')
 
-# Cache für Video-Infos
+# Memory Cache
 VIDEO_INFO_CACHE = {}
 
 def get_url(**kwargs):
@@ -24,6 +29,41 @@ def get_setting_bool(setting_id):
     """Liest Boolean-Setting aus."""
     return ADDON.getSettingBool(setting_id)
 
+def ensure_addon_data_folder():
+    """Stellt sicher dass der addon_data Ordner existiert."""
+    if not xbmcvfs.exists(ADDON_DATA_PATH):
+        xbmcvfs.mkdirs(ADDON_DATA_PATH)
+        log('Created addon_data folder: {}'.format(ADDON_DATA_PATH))
+
+def load_cache_from_disk():
+    """Lädt den Metadaten-Cache von der Festplatte."""
+    global VIDEO_INFO_CACHE
+    
+    try:
+        if xbmcvfs.exists(CACHE_FILE):
+            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+                VIDEO_INFO_CACHE = json.load(f)
+                log('Loaded {} cached video metadata entries from disk'.format(len(VIDEO_INFO_CACHE)))
+                return True
+    except Exception as e:
+        log('Error loading cache: {}'.format(str(e)))
+    
+    return False
+
+def save_cache_to_disk():
+    """Speichert den Metadaten-Cache auf die Festplatte."""
+    try:
+        ensure_addon_data_folder()
+        
+        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(VIDEO_INFO_CACHE, f, ensure_ascii=False, indent=2)
+        
+        log('Saved {} video metadata entries to cache'.format(len(VIDEO_INFO_CACHE)))
+        return True
+    except Exception as e:
+        log('Error saving cache: {}'.format(str(e)))
+        return False
+
 def get_playlists():
     """Gibt die eingebetteten Playlist-Daten zurueck."""
     try:
@@ -35,18 +75,20 @@ def get_playlists():
         log('ERROR loading playlists: {}'.format(str(e)))
         return {}
 
-def get_video_info_from_youtube(video_id):
-    """Holt Video-Metadaten von YouTube via oEmbed API."""
-    if video_id in VIDEO_INFO_CACHE:
+def get_video_info_from_youtube(video_id, force_refresh=False):
+    """Holt Video-Metadaten von YouTube via oEmbed API mit Caching."""
+    # Prüfe Memory-Cache
+    if not force_refresh and video_id in VIDEO_INFO_CACHE:
         return VIDEO_INFO_CACHE[video_id]
     
     try:
         import urllib.request
         
+        log('Fetching metadata for video: {}'.format(video_id))
         url = 'https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={}&format=json'.format(video_id)
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
         
-        with urllib.request.urlopen(req, timeout=3) as response:
+        with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode('utf-8'))
             
             title = data.get('title', '')
@@ -67,16 +109,21 @@ def get_video_info_from_youtube(video_id):
             
             # Entferne "(Official Video)" etc.
             for phrase in ['(Official Video)', '(Official Music Video)', '[Official Video]', 
-                          '[Official Music Video]', '(Official HD Video)', '[HD]']:
+                          '[Official Music Video]', '(Official HD Video)', '[HD]', '(HD)',
+                          '(Explicit)', '[Explicit]', '(Audio)', '[Audio]']:
                 song = song.replace(phrase, '')
             song = song.strip()
             
             info = {
                 'artist': artist,
                 'title': song,
-                'full_title': title
+                'full_title': title,
+                'thumb': 'https://i.ytimg.com/vi/{}/mqdefault.jpg'.format(video_id),
+                'poster': 'https://i.ytimg.com/vi/{}/hqdefault.jpg'.format(video_id),
+                'plot': '{} - {}'.format(artist, song)
             }
             
+            # Speichere im Memory-Cache
             VIDEO_INFO_CACHE[video_id] = info
             return info
             
@@ -84,11 +131,17 @@ def get_video_info_from_youtube(video_id):
         log('Could not fetch info for {}: {}'.format(video_id, str(e)))
     
     # Fallback
-    return {
+    fallback = {
         'artist': 'Unknown Artist',
         'title': 'Video {}'.format(video_id[:8]),
-        'full_title': video_id
+        'full_title': video_id,
+        'thumb': 'https://i.ytimg.com/vi/{}/mqdefault.jpg'.format(video_id),
+        'poster': 'https://i.ytimg.com/vi/{}/hqdefault.jpg'.format(video_id),
+        'plot': 'YouTube Video ID: {}'.format(video_id)
     }
+    
+    VIDEO_INFO_CACHE[video_id] = fallback
+    return fallback
 
 def list_channels(handle):
     """Zeigt die Hauptkategorien an."""
@@ -172,6 +225,10 @@ def browse_channel(handle, channel_id):
     try:
         log('=== BROWSE: {} ==='.format(channel_id))
         
+        # Lade Cache beim ersten Aufruf
+        if not VIDEO_INFO_CACHE:
+            load_cache_from_disk()
+        
         # Prüfe Setting
         fetch_metadata = get_setting_bool('fetch_metadata')
         log('Fetch metadata setting: {}'.format(fetch_metadata))
@@ -182,10 +239,18 @@ def browse_channel(handle, channel_id):
             video_ids = playlists[channel_id]
             log('Showing {} videos'.format(len(video_ids)))
             
+            # Zähle wie viele Videos bereits gecached sind
+            cached_count = sum(1 for vid in video_ids if vid in VIDEO_INFO_CACHE)
+            
             # Info-Item
             if fetch_metadata:
-                info_text = '[COLOR yellow]{} Videos - Metadaten werden geladen...[/COLOR]'.format(len(video_ids))
-                info_plot = 'Video-Titel werden von YouTube geladen. Dies kann einige Sekunden dauern.'
+                if cached_count == len(video_ids):
+                    info_text = '[COLOR green]{} Videos - Alle aus Cache[/COLOR]'.format(len(video_ids))
+                    info_plot = 'Alle Video-Informationen sind bereits im Cache vorhanden.'
+                else:
+                    info_text = '[COLOR yellow]{} Videos - {} aus Cache, {} werden geladen...[/COLOR]'.format(
+                        len(video_ids), cached_count, len(video_ids) - cached_count)
+                    info_plot = 'Fehlende Video-Informationen werden von YouTube geladen und gecached.'
             else:
                 info_text = '[COLOR yellow]{} Videos[/COLOR]'.format(len(video_ids))
                 info_plot = 'Tipp: Aktiviere "Video-Titel laden" in den Addon-Einstellungen für Künstler & Titel.'
@@ -194,21 +259,33 @@ def browse_channel(handle, channel_id):
             info.setInfo('video', {'title': 'Info', 'plot': info_plot})
             xbmcplugin.addDirectoryItem(handle, '', info, False)
             
+            # Tracking für neue Metadaten
+            new_metadata_count = 0
+            
             # Videos
             for idx, video_id in enumerate(video_ids, 1):
                 if fetch_metadata:
-                    # Hole Video-Infos von YouTube
+                    # Hole Video-Infos (aus Cache oder von YouTube)
+                    was_cached = video_id in VIDEO_INFO_CACHE
                     video_info = get_video_info_from_youtube(video_id)
+                    
+                    if not was_cached:
+                        new_metadata_count += 1
+                    
                     label = '{} - {}'.format(video_info['artist'], video_info['title'])
                     title = video_info['title']
                     artist = video_info['artist']
-                    plot = video_info['full_title']
+                    plot = video_info['plot']
+                    thumb = video_info['thumb']
+                    poster = video_info['poster']
                 else:
                     # Schnelle Anzeige ohne Metadaten
                     label = 'Music Video #{}'.format(idx)
                     title = label
                     artist = 'Unknown'
                     plot = 'YouTube Video ID: {}'.format(video_id)
+                    thumb = 'https://i.ytimg.com/vi/{}/mqdefault.jpg'.format(video_id)
+                    poster = 'https://i.ytimg.com/vi/{}/hqdefault.jpg'.format(video_id)
                 
                 item = xbmcgui.ListItem(label=label)
                 item.setInfo('video', {
@@ -219,8 +296,8 @@ def browse_channel(handle, channel_id):
                     'plot': plot
                 })
                 item.setArt({
-                    'thumb': 'https://i.ytimg.com/vi/{}/mqdefault.jpg'.format(video_id),
-                    'poster': 'https://i.ytimg.com/vi/{}/hqdefault.jpg'.format(video_id)
+                    'thumb': thumb,
+                    'poster': poster
                 })
                 
                 youtube_url = 'plugin://plugin.video.youtube/play/?video_id={}'.format(video_id)
@@ -228,7 +305,13 @@ def browse_channel(handle, channel_id):
                 
                 # Progress-Log alle 50 Videos
                 if fetch_metadata and idx % 50 == 0:
-                    log('Loaded metadata for {} of {} videos'.format(idx, len(video_ids)))
+                    log('Processed {} of {} videos ({} new from YouTube)'.format(
+                        idx, len(video_ids), new_metadata_count))
+            
+            # Speichere Cache wenn neue Daten geladen wurden
+            if fetch_metadata and new_metadata_count > 0:
+                log('Saving cache with {} new entries...'.format(new_metadata_count))
+                save_cache_to_disk()
         else:
             error = xbmcgui.ListItem(label='[COLOR red]Kanal nicht gefunden[/COLOR]')
             xbmcplugin.addDirectoryItem(handle, '', error, False)
@@ -265,5 +348,5 @@ def router(paramstring):
             pass
 
 if __name__ == '__main__':
-    log('MTV REWIND v1.5.0 - With Settings')
+    log('MTV REWIND v1.6.0 - With Disk Cache')
     router(sys.argv[2][1:])
