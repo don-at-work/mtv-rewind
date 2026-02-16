@@ -12,9 +12,13 @@ from urllib.parse import urlencode, parse_qsl
 
 ADDON = xbmcaddon.Addon()
 ADDON_NAME = ADDON.getAddonInfo('name')
-ADDON_ID = ADDON.getAddonInfo('id')
+ADDON_PATH = xbmcvfs.translatePath(ADDON.getAddonInfo('path'))
 ADDON_DATA_PATH = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
-CACHE_FILE = os.path.join(ADDON_DATA_PATH, 'video_metadata_cache.json')
+
+# Cache-Dateien
+USER_CACHE_FILE = os.path.join(ADDON_DATA_PATH, 'video_metadata_cache.json')
+PREBUILT_CACHE_FILE = os.path.join(ADDON_PATH, 'resources', 'cache', 'video_metadata_cache.json')
+
 
 # Memory Cache
 VIDEO_INFO_CACHE = {}
@@ -22,8 +26,8 @@ VIDEO_INFO_CACHE = {}
 def get_url(**kwargs):
     return '{}?{}'.format(sys.argv[0], urlencode(kwargs))
 
-def log(msg, level=xbmc.LOGINFO):
-    xbmc.log('[MTV-REWIND] {}'.format(str(msg)), level)
+def log(msg):
+    xbmc.log('[MTV-REWIND] {}'.format(str(msg)), xbmc.LOGINFO)
 
 def get_setting_bool(setting_id):
     """Liest Boolean-Setting aus."""
@@ -40,8 +44,8 @@ def load_cache_from_disk():
     global VIDEO_INFO_CACHE
     
     try:
-        if xbmcvfs.exists(CACHE_FILE):
-            with open(CACHE_FILE, 'r', encoding='utf-8') as f:
+        if xbmcvfs.exists(PREBUILT_CACHE_FILE):
+            with open(PREBUILT_CACHE_FILE, 'r', encoding='utf-8') as f:
                 VIDEO_INFO_CACHE = json.load(f)
                 log('Loaded {} cached video metadata entries from disk'.format(len(VIDEO_INFO_CACHE)))
                 return True
@@ -55,7 +59,7 @@ def save_cache_to_disk():
     try:
         ensure_addon_data_folder()
         
-        with open(CACHE_FILE, 'w', encoding='utf-8') as f:
+        with open(PREBUILT_CACHE_FILE, 'w', encoding='utf-8') as f:
             json.dump(VIDEO_INFO_CACHE, f, ensure_ascii=False, indent=2)
         
         log('Saved {} video metadata entries to cache'.format(len(VIDEO_INFO_CACHE)))
@@ -72,7 +76,7 @@ def get_playlists():
             len(PLAYLISTS), sum(len(v) for v in PLAYLISTS.values())))
         return PLAYLISTS
     except Exception as e:
-        log('ERROR loading playlists: {}'.format(str(e)), level=xbmc.LOGERROR)
+        log('ERROR loading playlists: {}'.format(str(e)))
         return {}
 
 def get_video_info_from_youtube(video_id, force_refresh=False):
@@ -128,7 +132,7 @@ def get_video_info_from_youtube(video_id, force_refresh=False):
             return info
             
     except Exception as e:
-        log('Could not fetch info for {}: {}'.format(video_id, str(e)), level=xbmc.LOGWARNING)
+        log('Could not fetch info for {}: {}'.format(video_id, str(e)))
     
     # Fallback
     fallback = {
@@ -216,8 +220,8 @@ def list_channels(handle):
         log('=== LIST CHANNELS END ===')
         
     except Exception as e:
-        log('ERROR: {}'.format(str(e)), level=xbmc.LOGERROR)
-        log(traceback.format_exc(), level=xbmc.LOGERROR)
+        log('ERROR: {}'.format(str(e)))
+        log(traceback.format_exc())
         xbmcplugin.endOfDirectory(handle, succeeded=False)
 
 def browse_channel(handle, channel_id):
@@ -325,8 +329,8 @@ def browse_channel(handle, channel_id):
         log('=== BROWSE END ===')
         
     except Exception as e:
-        log('ERROR: {}'.format(str(e)), level=xbmc.LOGERROR)
-        log(traceback.format_exc(), level=xbmc.LOGERROR)
+        log('ERROR: {}'.format(str(e)))
+        log(traceback.format_exc())
         xbmcplugin.endOfDirectory(handle, succeeded=False)
 
 def router(paramstring):
@@ -341,7 +345,7 @@ def router(paramstring):
         else:
             xbmcplugin.endOfDirectory(handle, succeeded=False)
     except Exception as e:
-        log('FATAL: {}'.format(str(e)), level=xbmc.LOGERROR)
+        log('FATAL: {}'.format(str(e)))
         try:
             xbmcplugin.endOfDirectory(int(sys.argv[1]), succeeded=False)
         except:
