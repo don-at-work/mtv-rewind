@@ -16,10 +16,6 @@ ADDON_NAME = ADDON.getAddonInfo('name')
 ADDON_PATH = xbmcvfs.translatePath(ADDON.getAddonInfo('path'))
 ADDON_DATA_PATH = xbmcvfs.translatePath(ADDON.getAddonInfo('profile'))
 
-# Cache-Dateien
-USER_CACHE_FILE = os.path.join(ADDON_DATA_PATH, 'video_metadata_cache.json')
-PREBUILT_CACHE_FILE = os.path.join(ADDON_PATH, 'resources', 'cache', 'video_metadata_cache.json')
-
 # Memory Cache
 VIDEO_INFO_CACHE = {}
 
@@ -30,87 +26,49 @@ def log(msg):
     xbmc.log('[MTV-REWIND] {}'.format(str(msg)), xbmc.LOGINFO)
 
 def get_setting_bool(setting_id):
-    """Liest Boolean-Setting aus."""
     return ADDON.getSettingBool(setting_id)
 
-def ensure_addon_data_folder():
-    """Stellt sicher dass der addon_data Ordner existiert."""
-    if not xbmcvfs.exists(ADDON_DATA_PATH):
-        xbmcvfs.mkdirs(ADDON_DATA_PATH)
-        log('Created addon_data folder: {}'.format(ADDON_DATA_PATH))
-
 def load_cache_from_disk():
-    """Lädt den Metadaten-Cache von der Festplatte."""
     global VIDEO_INFO_CACHE
-    try:
-        if xbmcvfs.exists(PREBUILT_CACHE_FILE):
-            with open(PREBUILT_CACHE_FILE, 'r', encoding='utf-8') as f:
-                VIDEO_INFO_CACHE = json.load(f)
-                log('Loaded {} cached video metadata entries from disk'.format(len(VIDEO_INFO_CACHE)))
-                return True
-    except Exception as e:
-        log('Error loading cache: {}'.format(str(e)))
+    # Prüfe beide möglichen Pfade (User Data oder Addon Pfad)
+    paths = [
+        os.path.join(ADDON_DATA_PATH, 'video_metadata_cache.json'),
+        os.path.join(ADDON_PATH, 'resources', 'cache', 'video_metadata_cache.json')
+    ]
+    for path in paths:
+        try:
+            if xbmcvfs.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    VIDEO_INFO_CACHE = json.load(f)
+                    log('Cache loaded from: {}'.format(path))
+                    return True
+        except: continue
     return False
 
-def save_cache_to_disk():
-    """Speichert den Metadaten-Cache auf die Festplatte."""
-    try:
-        ensure_addon_data_folder()
-        with open(PREBUILT_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(VIDEO_INFO_CACHE, f, ensure_ascii=False, indent=2)
-        log('Saved {} video metadata entries to cache'.format(len(VIDEO_INFO_CACHE)))
-        return True
-    except Exception as e:
-        log('Error saving cache: {}'.format(str(e)))
-        return False
-
 def get_playlists():
-    """Gibt die eingebetteten Playlist-Daten zurueck."""
     try:
         from resources.lib.playlists_data import PLAYLISTS
         return PLAYLISTS
-    except Exception as e:
-        log('ERROR loading playlists: {}'.format(str(e)))
+    except:
         return {}
 
-def get_video_info_from_youtube(video_id, force_refresh=False):
-    """Holt Video-Metadaten von YouTube via oEmbed API mit Caching."""
-    if not force_refresh and video_id in VIDEO_INFO_CACHE:
+def get_video_info(video_id):
+    if video_id in VIDEO_INFO_CACHE:
         return VIDEO_INFO_CACHE[video_id]
-    
-    try:
-        import urllib.request
-        url = 'https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={}&format=json'.format(video_id)
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode('utf-8'))
-            title = data.get('title', '')
-            author = data.get('author_name', '')
-            
-            if ' - ' in title:
-                parts = title.split(' - ', 1)
-                artist, song = parts[0].strip(), parts[1].strip()
-            else:
-                artist, song = author, title
-            
-            for phrase in ['(Official Video)', '(Official Music Video)', '[Official Video]', '(HD)', '(Explicit)']:
-                song = song.replace(phrase, '')
-            
-            info = {
-                'artist': artist,
-                'title': song.strip(),
-                'thumb': 'https://i.ytimg.com/vi/{}/mqdefault.jpg'.format(video_id),
-                'poster': 'https://i.ytimg.com/vi/{}/hqdefault.jpg'.format(video_id),
-                'plot': '{} - {}'.format(artist, song.strip())
-            }
-            VIDEO_INFO_CACHE[video_id] = info
-            return info
-    except:
-        return {'artist': 'Unknown', 'title': 'Video ' + video_id, 'thumb': '', 'poster': '', 'plot': ''}
+    return {
+        'artist': 'Unknown',
+        'title': 'Video ' + video_id,
+        'thumb': 'https://i.ytimg.com/vi/{}/mqdefault.jpg'.format(video_id)
+    }
 
 def list_channels(handle):
-    """Zeigt die Hauptkategorien an."""
+    """Hauptmenü."""
+    # 1. Suche
+    search_item = xbmcgui.ListItem(label='[COLOR yellow][ Suche... ][/COLOR]')
+    search_item.setArt({'icon': 'DefaultAddonsSearch.png'})
+    xbmcplugin.addDirectoryItem(handle, get_url(action='search'), search_item, True)
+
+    # 2. Kategorien
     playlists = get_playlists()
     channel_names = {
         '1stday': '1st Day (1981)', '70s': '1970s', '80s': '1980s', '90s': '1990s',
@@ -121,53 +79,77 @@ def list_channels(handle):
     for cid in sorted(playlists.keys()):
         name = channel_names.get(cid, cid.title())
         item = xbmcgui.ListItem(label=name)
-        item.setInfo('video', {'title': name, 'plot': '{} Videos'.format(len(playlists[cid]))})
+        item.setArt({'icon': 'DefaultMusicVideos.png'})
         xbmcplugin.addDirectoryItem(handle, get_url(action='browse', channel=cid), item, True)
     
     xbmcplugin.endOfDirectory(handle)
 
-def browse_channel(handle, channel_id):
-    """Zeigt Videos eines Kanals an inklusive Shuffle-Option."""
+def browse_channel(handle, channel_id, custom_vids=None):
     if not VIDEO_INFO_CACHE:
         load_cache_from_disk()
         
-    playlists = get_playlists()
-    if channel_id not in playlists:
-        return
+    if custom_vids:
+        video_ids = custom_vids
+        is_search = True
+    else:
+        playlists = get_playlists()
+        video_ids = playlists.get(channel_id, [])
+        is_search = False
 
-    video_ids = playlists[channel_id]
+    if video_ids:
+        # Shuffle Button
+        v_ids_str = ','.join(video_ids) if is_search else ''
+        u = get_url(action='play_shuffle', channel=channel_id, vids=v_ids_str)
+        item = xbmcgui.ListItem(label='[COLOR orange]➔ SHUFFLE ALL[/COLOR]')
+        xbmcplugin.addDirectoryItem(handle, u, item, False)
 
-    # 1. Shuffle Button hinzufügen
-    shuffle_item = xbmcgui.ListItem(label='[COLOR orange]➔ SHUFFLE ALL (Zufallswiedergabe)[/COLOR]')
-    shuffle_item.setArt({'icon': 'DefaultMusicVideos.png'})
-    shuffle_url = get_url(action='play_shuffle', channel=channel_id)
-    xbmcplugin.addDirectoryItem(handle, shuffle_url, shuffle_item, False)
-
-    # 2. Videos auflisten
-    fetch_meta = get_setting_bool('fetch_metadata')
-    for video_id in video_ids:
-        if fetch_meta:
-            info = get_video_info_from_youtube(video_id)
-            label = '{} - {}'.format(info['artist'], info['title'])
-        else:
-            label = 'Video {}'.format(video_id)
-            info = {'thumb': 'https://i.ytimg.com/vi/{}/mqdefault.jpg'.format(video_id), 'artist': 'VA', 'title': label}
-
+    for vid in video_ids:
+        info = get_video_info(vid)
+        label = '{} - {}'.format(info['artist'], info['title'])
         item = xbmcgui.ListItem(label=label)
         item.setArt({'thumb': info.get('thumb')})
-        item.setInfo('video', {'title': info.get('title'), 'artist': [info.get('artist')]})
-        url = 'plugin://plugin.video.youtube/play/?video_id={}'.format(video_id)
+        item.setInfo('video', {'title': info['title'], 'artist': [info['artist']]})
+        url = 'plugin://plugin.video.youtube/play/?video_id={}'.format(vid)
         xbmcplugin.addDirectoryItem(handle, url, item, False)
 
     xbmcplugin.endOfDirectory(handle)
 
-def play_shuffle(channel_id):
-    """Mischt die Videos und startet die Wiedergabe."""
-    playlists = get_playlists()
-    if channel_id not in playlists:
+def run_search(handle):
+    """Suche über xbmc.Keyboard."""
+    # KORREKTUR: xbmc.Keyboard statt xbmcgui.Keyboard
+    kb = xbmc.Keyboard('', 'MTV Rewind Suche (Künstler oder Titel)')
+    kb.doModal()
+    
+    if not kb.isConfirmed():
+        return
+    
+    query = kb.getText().lower()
+    if not query:
         return
 
-    vids = list(playlists[channel_id])
+    if not VIDEO_INFO_CACHE:
+        load_cache_from_disk()
+
+    results = []
+    for vid, info in VIDEO_INFO_CACHE.items():
+        artist = info.get('artist', '').lower()
+        title = info.get('title', '').lower()
+        if query in artist or query in title:
+            results.append(vid)
+
+    if results:
+        browse_channel(handle, 'search_results', custom_vids=results)
+    else:
+        xbmcgui.Dialog().ok(ADDON_NAME, 'Keine Videos für "{}" im Cache gefunden.'.format(query))
+
+def play_shuffle(channel_id, vids_str=''):
+    if vids_str:
+        vids = vids_str.split(',')
+    else:
+        playlists = get_playlists()
+        vids = list(playlists.get(channel_id, []))
+    
+    if not vids: return
     random.shuffle(vids)
     
     playlist = xbmc.PlayList(xbmc.PLAYLIST_VIDEO)
@@ -175,10 +157,8 @@ def play_shuffle(channel_id):
     
     for vid in vids:
         url = 'plugin://plugin.video.youtube/play/?video_id={}'.format(vid)
-        item = xbmcgui.ListItem(label='Video ' + vid)
-        if vid in VIDEO_INFO_CACHE:
-            info = VIDEO_INFO_CACHE[vid]
-            item.setLabel('{} - {}'.format(info['artist'], info['title']))
+        info = get_video_info(vid)
+        item = xbmcgui.ListItem(label='{} - {}'.format(info['artist'], info['title']))
         playlist.add(url, item)
     
     xbmc.Player().play(playlist)
@@ -191,8 +171,10 @@ def router(paramstring):
         list_channels(handle)
     elif params.get('action') == 'browse':
         browse_channel(handle, params['channel'])
+    elif params.get('action') == 'search':
+        run_search(handle)
     elif params.get('action') == 'play_shuffle':
-        play_shuffle(params['channel'])
+        play_shuffle(params.get('channel'), params.get('vids', ''))
 
 if __name__ == '__main__':
     router(sys.argv[2][1:])
